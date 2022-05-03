@@ -1,6 +1,6 @@
 import express, { json } from "express";
 import chalk from "chalk";
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 import dotenv from "dotenv";
 import joi from "joi";
 import dayjs from "dayjs";
@@ -30,8 +30,8 @@ app.post("/participants", async (req, res) =>{
 
     try {
         const participants = await db.collection("participants").find().toArray();
-        if (participants.find(participant => participant.name === name) >=0) {
-            res.status(409).send("Esse usuário já existe na sala.");
+        if (participants.find(participant => participant.name === name)) {
+            res.sendStatus(409);
             return;
         }
         await db.collection("participants").insertOne(
@@ -51,13 +51,83 @@ app.post("/participants", async (req, res) =>{
     }
 });
 
-app.get("/participants", async (req, res) =>{
+app.get("/participants", async (_req, res) =>{
     try {
         const participants = await db.collection("participants").find().toArray();
         res.send(participants);
     } catch {
-        res.send("Erro ao listar usuários.");
+        res.sendStatus(500);
     }
 });
+
+app.post("/messages", async (req, res) =>{
+    const { user } = req.headers;
+    const { to, text, type } = req.body;
+    const messageSchema = joi.object(
+        {to: joi.string().required(),
+        text: joi.string().required(),
+        type:  joi.string().valid("message", "private_message").required()
+    });
+    const userSchema = joi.object({user:  joi.string().required()});
+    const validationMessage = messageSchema.validate(req.body, {abortEarly: true});
+    const validationUser = userSchema.validate(req.headers, {abortEarly: false});
+
+    if (validationMessage.error || validationUser.error) {
+        res.sendStatus(422);
+        return;
+    }
+    try {
+        const participants = await db.collection("participants").find().toArray();
+        if (participants.find(participant => participant.name === user)) {
+            res.sendStatus(422);
+            return;
+        }
+        await db.collection("messages").insertOne(
+            {from: user, 
+            to, text, type,
+            time: dayjs().format("HH:mm:ss")
+        });
+        res.sendStatus(201);
+    } catch {
+        res.sendStatus(500);
+    }
+});
+
+app.get("/messages", async (_req, res) => {
+    const messages = await db.collection("messages").find().toArray();
+    res.send(messages);
+});
+
+app.post("/status", async (req, res) => {
+    const { user } = req.headers;
+    try {
+        const participants = await db.collection("participants").find().toArray();
+        if (!participants.find(participant => participant.name === user)) {
+            res.sendStatus(404);
+            return;
+        }
+        await db.collection("participants").updateOne({name: user}, {$set: {lastStatus: Date.now()}});
+        res.sendStatus(200);
+    } catch {
+        res.sendStatus(500);
+    }
+})
+
+setInterval(async () => {
+    const participants = await db.collection("participants").find().toArray();
+    for (let i=0; i < participants.length; i++){
+        const participant = participants[i];
+        if ((Date.now() - participant.lastStatus) > 10000) {
+            await db.collection("participants").deleteOne({_id: new ObjectId(participant._id)});
+            await db.collection("messages").insertOne(
+                {from: participant.name, 
+                to: "Todos",
+                text: "sai da sala...", 
+                type: "status",
+                time: dayjs().format("HH:mm:ss")
+            });
+        }
+    };
+}, 15000);
 
 app.listen(5000, () => console.log(chalk.bold.cyanBright("Server is running at port 5000 👍")));
